@@ -1,45 +1,70 @@
+
 package kafka
 
 import (
-	"fmt"
+	// "github.com/confluentinc/confluent-kafka-go/kafka"
+	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
+	// github.com/IBM/sarama
+	// github.com/segmentio/kafka-go
+	// github.com/lovoo/goka
 
-	"github.com/IBM/sarama"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
 )
 
+const(
+	flushTimeout = 500 // ms
+)
+
+var errUnknownType = errors.New("unknown event type")
+
 type Producer struct {
-	producer sarama.SyncProducer 
+	producer *kafka.Producer
 }
 
-func NewProducer(adresses []string) (*Producer, error) {
-	config := sarama.NewConfig()
-	config.Producer.Return.Successes = true
+func NewProducer(address []string) (*Producer, error){
+	conf := &kafka.ConfigMap{
+		"bootstrap.servers": strings.Join(address, ","),
 
-
-	syncProducer, err := sarama.NewSyncProducer(adresses, config)  
+	}
+	p, err := kafka.NewProducer(conf)
 	if err != nil {
-		return nil, fmt.Errorf("error with NewProducer: %w", err)
+		return nil, fmt.Errorf("error with new producer: %w", err)
 	}
 	
-	return &Producer{
-		producer: syncProducer,
-	}, nil
+	return &Producer{producer: p}, nil
 }
 
-func (p *Producer) SendMessage(topic, message string) error {
-	msg := &sarama.ProducerMessage{
-		Topic: 	topic,
-		Key:	nil,
-		Value:	sarama.StringEncoder(message),
+func (p *Producer) Produce(message, topic, key string, t time.Time) error{
+	kafkaMsg := &kafka.Message{
+		TopicPartition: kafka.TopicPartition{
+			Topic: &topic,
+			Partition: kafka.PartitionAny,
+		},
+		Value:			[]byte(message),
+		Key:			[]byte(key),
+		Timestamp: 		t,
 	}
-
-	_, _, err := p.producer.SendMessage(msg)
-	if err != nil {
-		return fmt.Errorf("failed to send message: %w", err)
+	
+	kafkaChan := make(chan kafka.Event)
+	if err := p.producer.Produce(kafkaMsg, kafkaChan); err != nil {
+		return err
 	}
-
-	return nil
+	
+	e := <- kafkaChan
+	switch ev := e.(type) {
+	case *kafka.Message:
+		return nil
+	case kafka.Error:
+		return ev
+	default:
+		return errUnknownType
+	}
 }
 
-func (p *Producer) Close() {
+func (p *Producer) Close(){
+	p.producer.Flush(flushTimeout)
 	p.producer.Close()
 }
